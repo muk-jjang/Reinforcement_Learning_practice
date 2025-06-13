@@ -41,29 +41,34 @@ class SAC():
             self.policy_optim = Adam(self.policy.parameters(), lr=args.lr)
     
     def select_action(self, state, evaluate=False):
+        # Handle state if it's a tuple or has a different structure
+        if isinstance(state, tuple):
+            state = state[0]
+            
         state = torch.FloatTensor(state).to(self.device).unsqueeze(0)
         if evaluate is False:
-            action, _, _, _ = self.policy.sample(state)
+            action, _, _ = self.policy.sample(state)
         else:
             _, _, action = self.policy.sample(state)
         return action.detach().cpu().numpy()[0]
     
     def update_parameters(self, memory, batch_size, updates):
         # Sample a batch from memory
-        state_batch, action_batch, reward_batch, next_state_batch, mask_batch = memory.sample(batch_size)
+        state_batch, action_batch, next_state_batch, reward_batch, done_batch = memory.sample(batch_size)
 
         state_batch = torch.FloatTensor(state_batch).to(self.device)
         next_state_batch = torch.FloatTensor(next_state_batch).to(self.device)
         action_batch = torch.FloatTensor(action_batch).to(self.device)
         reward_batch = torch.FloatTensor(reward_batch).to(self.device).unsqueeze(1)
-        mask_batch = torch.FloatTensor(mask_batch).to(self.device).unsqueeze(1)
+        done_batch = torch.FloatTensor(done_batch).to(self.device).unsqueeze(1)
 
         # Predict next-state Q-values
         with torch.no_grad():
             next_state_action, next_state_log_pi, _ = self.policy.sample(next_state_batch)
             qf1_next_target, qf2_next_target = self.critic_target(next_state_batch, next_state_action)
             min_qf_next_target = torch.min(qf1_next_target, qf2_next_target) - self.alpha * next_state_log_pi
-            next_q_value = reward_batch + mask_batch * self.gamma * (min_qf_next_target)
+            next_q_value = reward_batch + (1-done_batch) * self.gamma * (min_qf_next_target)
+
         qf1, qf2 = self.critic(state_batch, action_batch)
         qf1_loss = F.mse_loss(qf1, next_q_value)
         qf2_loss = F.mse_loss(qf2, next_q_value)
@@ -99,3 +104,5 @@ class SAC():
 
         if updates % self.target_update_interval ==0:
             soft_update(self.critic_target, self.critic, self.tau)
+            
+        return qf1_loss.item(), qf2_loss.item(), policy_loss.item(), alpha_loss.item(), alpha_tlogs.item()

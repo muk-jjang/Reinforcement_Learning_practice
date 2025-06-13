@@ -1,3 +1,8 @@
+import os
+# Fix for headless server
+# os.environ['MUJOCO_GL'] = 'osmesa'  # Commented out for macOS compatibility
+os.environ['MUJOCO_PY_MUJOCO_PATH'] = '/usr/local/mujoco'
+
 import argparse
 import datetime
 import gym
@@ -9,7 +14,7 @@ from replay_buffer import ReplayBuffer
 import wandb
 
 parser = argparse.ArgumentParser(description='PyTorch Soft Actor-Critic Args')
-parser.add_argument('--env-name', default="HalfCheetah-v2",
+parser.add_argument('--env-name', default="HalfCheetah-v4",
                     help='Mujoco Gym environment (default: HalfCheetah-v2)')
 parser.add_argument('--policy', default="Gaussian",
                     help='Policy Type: Gaussian | Deterministic (default: Gaussian)')
@@ -46,19 +51,31 @@ parser.add_argument('--cuda', action="store_true",
                     help='run on CUDA (default: False)')
 args = parser.parse_args()
 
+if torch.cuda.is_available():
+    args.cuda = True
+
+wandb.init(project="sac-v4", name=f"{args.env_name}-{args.policy}-{args.seed}")
+
 #Environment
 env = gym.make(args.env_name)
-env.seed(args.seed)
+# env.seed(args.seed)
 env.action_space.seed(args.seed)
 
 torch.manual_seed(args.seed)
 np.random.seed(args.seed)
 
+# Debug prints
+# print(f"Environment: {args.env_name}")
+# print(f"Observation space: {env.observation_space}")
+# print(f"Observation space shape: {env.observation_space.shape}")
+# print(f"Action space: {env.action_space}")
+# print(f"Action space shape: {env.action_space.shape}")
+# print(f"Hidden size: {args.hidden_size}")
+
 #Agent
 agent = SAC(env.observation_space.shape[0], env.action_space, args)
-
 # buffer
-memory = ReplayBuffer(args.replay_size, args.batch_size)
+memory = ReplayBuffer(args.replay_size, args.seed)
 
 # Training
 total_numsteps = 0
@@ -69,7 +86,10 @@ for i_episode in itertools.count(1):
     episode_steps = 0
     done = False
     state = env.reset()
-
+    
+    if isinstance(state, tuple):
+        state = state[0]
+    
     while not done:
         if args.start_steps > total_numsteps:
             action = env.action_space.sample()
@@ -78,23 +98,27 @@ for i_episode in itertools.count(1):
         
         if len(memory) > args.batch_size:
             critic_1_loss, critic_2_loss, policy_loss, ent_loss, alpha = agent.update_parameters(memory, args.batch_size, updates)
-            wandb.log({
-                "loss/qf1_loss": critic_1_loss.item(),
-                "loss/qf2_loss": critic_2_loss.item(),
-                "loss/policy_loss": policy_loss.item(),
-                "loss/ent_loss": ent_loss.item(),
-                "entropy_temprature": alpha.item(),
-            })
+            # logging이 너무 자주 이루어짐 -> 1000 timestep마다 logging
+            if total_numsteps % 1000 ==0:
+                wandb.log({
+                    "loss/qf1_loss": critic_1_loss,
+                    "loss/qf2_loss": critic_2_loss,
+                    "loss/policy_loss": policy_loss,
+                    "loss/ent_loss": ent_loss,
+                    "entropy_temprature": alpha,
+                })
             updates += 1
-        next_state, reward, done, _ = env.step(action)
+        next_state, reward, terminated, truncated, info = env.step(action)
+        done = terminated or truncated
         episode_reward += reward
         total_numsteps += 1
         episode_steps += 1
+    
+        # Handle next_state if it's a tuple (for newer gym versions)
+        if isinstance(next_state, tuple):
+            next_state = next_state[0]
         
-
-        mask = 1 if episode_steps == env._max_episode_steps else 0
-
-        memory.push(state, action, next_state, reward, mask)
+        memory.push(state, action, reward, next_state, done)
         state = next_state
 
     if total_numsteps > args.num_steps:
@@ -110,14 +134,24 @@ for i_episode in itertools.count(1):
         episodes = 10
         for _ in range(episodes):
             state = env.reset()
+            
+            # Handle state if it's a tuple (for newer gym versions)
+            if isinstance(state, tuple):
+                state = state[0]
+                
             episode_reward = 0
             done = False
             while not done:
                 action = agent.select_action(state, evaluate=True)
 
-                next_state, reward, done, _ = env.step(action)
+                next_state, reward, terminated, truncated, info = env.step(action)
+                done = terminated or truncated
                 episode_reward += reward
                 
+                # Handle next_state if it's a tuple (for newer gym versions)
+                if isinstance(next_state, tuple):
+                    next_state = next_state[0]
+                    
                 state = next_state
 
             avg_reward += episode_reward

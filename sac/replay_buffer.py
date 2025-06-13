@@ -1,80 +1,44 @@
-import abc
+import random
+import numpy as np
+import os
+import pickle
 
-class ReplayBuffer(object, metaclass=abc.ABCMeta):
-    """
-    Abstract base class for replay buffers.
-    """
-    @abc.abstractmethod
-    def add_sample(self, observation, action, reward, next_observation,
-                   terminal, **kwargs):
+class ReplayBuffer:
+    def __init__(self, capacity, seed):
+        random.seed(seed)
+        self.capacity = capacity
+        self.buffer = []
+        self.position = 0
 
-        """
-        Add a single sample to the replay buffer.
-        Args:
-            obs: Observation from the environment.
-            action: Action taken by the agent.
-            reward: Reward received from the environment.
-            next_obs: Next observation after taking the action.
-            terminal: Boolean indicating if the episode has ended.
-            agent_info: Additional information from the agent.
-            env_info: Additional information from the environment.
-        """
-        pass
-    @abc.abstractmethod
-    def terminate_episode(self):
-        """
-        Mark the end of an episode in the replay buffer.
-        This can be used to handle any necessary cleanup or state updates.
-        """
-        pass
+    def push(self, state, action, reward, next_state, done):
+        if len(self.buffer) < self.capacity:
+            self.buffer.append(None)
+        self.buffer[self.position] = (state, action, reward, next_state, done)
+        self.position = (self.position + 1) % self.capacity
 
-    @property
-    @abc.abstractmethod
-    def size(self, **kwargs):
-        """
-        Return the current size of the replay buffer.
-        """
-        pass
-
-
-    def add_path(self, path):
-        """
-        Add a complete path (sequence of transitions) to the replay buffer.
-        """
+    def sample(self, batch_size):
+        batch = random.sample(self.buffer, batch_size)
+        state, action, reward, next_state, done = map(np.stack, zip(*batch))
         
-        for i, (
-            obs,
-            action, 
-            reward, 
-            next_obs, 
-            terminal, 
-            agent_info, 
-            env_info 
-            ) in enumerate(zip(
-                path['observations'],
-                path['actions'],
-                path['rewards'],
-                path['next_observations'],
-                path['terminals'],
-                path['agent_infos'],
-                path['env_infos']
-            )):
-                self.add_sample(
-                    obs=obs,
-                    action=action,
-                    reward=reward,
-                    next_obs=next_obs,
-                    terminal=terminal,
-                    agent_info=agent_info,
-                    env_info=env_info
-                )
-        self.terminate_episode()
-    
-    @abc.abstractmethod
-    def random_batch(self, batch_size):
-        """
-        Return a batch of size `batch_size`.
-        :param batch_size:
-        :return:
-        """
-        pass
+        return state, action, next_state, reward, done
+
+    def __len__(self):
+        return len(self.buffer)
+
+    def save_buffer(self, env_name, suffix="", save_path=None):
+        if not os.path.exists('checkpoints/'):
+            os.makedirs('checkpoints/')
+
+        if save_path is None:
+            save_path = "checkpoints/sac_buffer_{}_{}".format(env_name, suffix)
+        print('Saving buffer to {}'.format(save_path))
+
+        with open(save_path, 'wb') as f:
+            pickle.dump(self.buffer, f)
+
+    def load_buffer(self, save_path):
+        print('Loading buffer from {}'.format(save_path))
+
+        with open(save_path, "rb") as f:
+            self.buffer = pickle.load(f)
+            self.position = len(self.buffer) % self.capacity
